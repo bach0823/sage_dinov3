@@ -106,21 +106,28 @@ def run_amp_audit():
     print("4. MULTI-BATCH SAHUB ADAPTER GRADIENT VERIFICATION:")
     model_multi = create_b2_unet(num_classes=1, img_size=448, num_transformer_layers=4, pretrained=False).to(device)
     adapter_grad_counts = {name: 0 for name, p in model_multi.named_parameters() if "sa_hub" in name}
-    steps = 3
-    print(f"   - Tracking {len(adapter_grad_counts)} SAHub adapter parameter tensors across {steps} forward-backward steps...")
+    steps = 10
+    print(f"   - Tracking {len(adapter_grad_counts)} SAHub adapter parameter tensors across {steps} random batches...")
     for s in range(steps):
-        x_step = torch.randn(2, 3, 448, 448, device=device)
+        x_step = torch.randn(4, 3, 448, 448, device=device)
         model_multi.zero_grad(set_to_none=True)
         out_s = model_multi.forward_with_routing_info(x_step)
-        loss_s = out_s["logits"].sum()
+        loss_s = out_s["logits"].sum() + 0.01 * model_multi.compute_total_load_balance_loss(out_s["routing_infos"]["all"])
         loss_s.backward()
         for name, p in model_multi.named_parameters():
             if name in adapter_grad_counts and p.grad is not None and not (p.grad == 0).all():
                 adapter_grad_counts[name] += 1
 
-    active_count = sum(1 for v in adapter_grad_counts.values() if v > 0)
-    print(f"   - Active adapters across {steps} steps: {active_count} / {len(adapter_grad_counts)} ({active_count/len(adapter_grad_counts)*100:.1f}%)")
-    print("   [CONFIRMED] Adapters dynamically activate upon router dispatch. No permanently disconnected dead parameters.")
+    active_names = [n for n, c in adapter_grad_counts.items() if c > 0]
+    inactive_names = [n for n, c in adapter_grad_counts.items() if c == 0]
+    print(f"   - Active adapters across {steps} steps: {len(active_names)} / {len(adapter_grad_counts)} ({len(active_names)/len(adapter_grad_counts)*100:.1f}%)")
+    print("   - Active adapter sample (first 5):")
+    for n in active_names[:5]:
+        print(f"     * {n} (activated in {adapter_grad_counts[n]}/{steps} steps)")
+    if inactive_names:
+        print("   - Inactive adapter tensors (unrouted in these 10 batches):")
+        for n in inactive_names:
+            print(f"     * {n}")
     print("=" * 80)
 
 
