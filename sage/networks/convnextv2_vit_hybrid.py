@@ -101,15 +101,22 @@ class ConvNeXtV2ViTHybrid(nn.Module):
         )
 
         conv_weight_path = os.path.join(weights_dir, "convnext_tiny_dinov3.safetensors")
-        if pretrained and os.path.exists(conv_weight_path):
-            sd_c = load_file(conv_weight_path)
-            self.convnext.load_state_dict(sd_c, strict=False)
-            logger.info(f"Loaded pretrained weights for ConvNeXt from {conv_weight_path}")
-        elif pretrained:
-            logger.warning(f"Pretrained weights not found at {conv_weight_path}, trying timm download...")
+        loaded_conv = False
+        if pretrained and os.path.exists(conv_weight_path) and os.path.getsize(conv_weight_path) > 1024 * 1024:
+            try:
+                sd_c = load_file(conv_weight_path)
+                self.convnext.load_state_dict(sd_c, strict=False)
+                logger.info(f"Loaded pretrained weights for ConvNeXt from local {conv_weight_path}")
+                loaded_conv = True
+            except Exception as e:
+                logger.warning(f"Failed loading local {conv_weight_path}: {e}")
+
+        if pretrained and not loaded_conv:
+            logger.info(f"Downloading official pretrained weights for ConvNeXt-Tiny ({convnext_model_name}) from timm/HF...")
             m_temp = timm.create_model(convnext_model_name, pretrained=True)
             self.convnext.load_state_dict(m_temp.state_dict(), strict=False)
             del m_temp
+            logger.info("Successfully loaded official timm pretrained weights for ConvNeXt.")
 
         dummy_input = torch.randn(1, 3, img_size, img_size)
         self.encoder_channels: List[int] = []
@@ -141,15 +148,22 @@ class ConvNeXtV2ViTHybrid(nn.Module):
         logger.info(f"Loading ViT-Small DINOv3: {vit_model_name}")
         vit_full = timm.create_model(vit_model_name, pretrained=False)
         vit_weight_path = os.path.join(weights_dir, "vit_small_dinov3.safetensors")
-        if pretrained and os.path.exists(vit_weight_path):
-            sd_v = load_file(vit_weight_path)
-            vit_full.load_state_dict(sd_v, strict=False)
-            logger.info(f"Loaded pretrained weights for ViT-Small from {vit_weight_path}")
-        elif pretrained:
-            logger.warning(f"Pretrained weights not found at {vit_weight_path}, trying timm download...")
+        loaded_vit = False
+        if pretrained and os.path.exists(vit_weight_path) and os.path.getsize(vit_weight_path) > 1024 * 1024:
+            try:
+                sd_v = load_file(vit_weight_path)
+                vit_full.load_state_dict(sd_v, strict=False)
+                logger.info(f"Loaded pretrained weights for ViT-Small from local {vit_weight_path}")
+                loaded_vit = True
+            except Exception as e:
+                logger.warning(f"Failed loading local {vit_weight_path}: {e}")
+
+        if pretrained and not loaded_vit:
+            logger.info(f"Downloading official pretrained weights for ViT-Small ({vit_model_name}) from timm/HF...")
             m_temp = timm.create_model(vit_model_name, pretrained=True)
             vit_full.load_state_dict(m_temp.state_dict(), strict=False)
             del m_temp
+            logger.info("Successfully loaded official timm pretrained weights for ViT-Small.")
 
         self.transformer_dim = vit_full.embed_dim  # 384
         self.num_heads = getattr(vit_full, "num_heads", 6)
