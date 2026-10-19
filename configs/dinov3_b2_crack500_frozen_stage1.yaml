@@ -2,6 +2,7 @@ model: B2
 img_size: 448
 batch_size: 10
 num_workers: 2
+num_transformer_layers: 4
 epochs: 35
 stage1_epochs: 17
 warmup_epochs: 3

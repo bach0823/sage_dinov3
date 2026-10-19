@@ -701,7 +701,7 @@ def main(args):
         model = create_b1_unet(num_transformer_layers=vit_depth, pretrained=True).to(device)
         logger.info(f"Loaded B1 with {vit_depth} ViT blocks")
     elif model_type == 'B2':
-        vit_depth = int(config.get('num_transformer_layers', 12))
+        vit_depth = int(config.get('num_transformer_layers', 4))
         sage_cfg = config.get('sage_config', {})
         use_plu_head = config.get('use_plu_head', False)
         use_oriented_strip_pooling = config.get('use_oriented_strip_pooling', False)
