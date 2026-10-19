@@ -1,0 +1,68 @@
+model: B2
+img_size: 448
+batch_size: 8
+num_workers: 2
+epochs: 35
+stage1_epochs: 17
+warmup_epochs: 3
+patience: 8
+seed: 42
+two_stage: true
+
+# ─── Config B: Frozen Encoder Stage 1 only, Unfreeze at LR=1e-5 in Stage 2 ───
+# Stage 1 (epoch 1-17): DINOv3 CNN encoder + ViT transformer frozen.
+#   Only train: SAGE Routers, SA-Hub adapters, Decoder, interface projections.
+# Stage 2 (epoch 18-35): Backbone unfrozen at very low LR=1e-5 for fine-tuning.
+#   SAGE + Decoder continue at stage2_base_lr / stage2_shared_lr.
+freeze_encoder: true
+freeze_transformer: true
+
+# Set true to trigger Stage 2 backbone unfreeze logic in train_crack.py
+freeze_backbone_stage1_only: true
+# LR for the unfrozen encoder parameters in Stage 2
+stage2_encoder_lr: 1e-5
+
+# Stage 1 Learning Rates (backbone frozen → higher LR safe for SAGE + decoder)
+lr: 1e-4
+sage_lr: 2e-4
+
+# Stage 2 Learning Rates (SAGE + decoder continue as normal)
+stage2_base_lr: 1e-4
+stage2_shared_lr: 1e-4
+
+output_dir: "results/dinov3_sage_b2_frozen_stage1"
+mask_suffix: ""
+
+# SAGE Configuration (8 Experts: 4 CNN Stages + 4 ViT Blocks, top-k=2)
+sage_config:
+  top_k: 2
+  gating_type: "sigmoid"
+  shared_expert_indices: [0, 1, 2, 3]
+  router_hidden_dim: 64
+  load_balance_factor: 0.01
+  logit_modulation: true
+  expert_dropout: 0.1
+  fusion_type: "residual"
+  residual_scale: 0.1
+
+# Objective Component: SoftBIoU (lambda=0.50, d=2) - Preserved exactly as SAGE-Lite Phase 7
+boundary_iou_weight: 0.50
+boundary_iou_dilation: 2
+
+# Control flags
+ab_bpl_weight: 0.0
+cldice_weight: 0.0
+
+root_dir: "datasets/Crack500_ready"
+
+train:
+  images: "train/images"
+  masks: "train/masks"
+
+val:
+  images: "val/images"
+  masks: "val/masks"
+
+test:
+  images: "test/images"
+  masks: "test/masks"

@@ -93,6 +93,7 @@ def create_stage2_optimizer(
     shared_prefixes: Optional[Set[str]] = None,
     weight_decay: float = 0.05,
     stage2_p3_lr: Optional[float] = None,  # Deprecated
+    stage2_encoder_lr: Optional[float] = None,  # Config B: encoder fine-tune LR (1e-5)
 ) -> optim.Optimizer:
     """
     Construct Stage-2 optimizer parameter groups according to SAGE-Lite protocol:
@@ -100,6 +101,7 @@ def create_stage2_optimizer(
     - Base / Other modules (ViT expert blocks, Routers, SA-Hub, Decoder, Bridge/interface layers): stage2_base_lr
     - SAGE routing/adaptation modules (Routers, SA-Hub, alpha) when stage2_sage_lr != stage2_base_lr: stage2_sage_lr
     - S2-Gate (Spatial Modulation Gate): stage2_s2_gate_lr
+    - [Config B only] Backbone encoder (CNN stages + ViT blocks): stage2_encoder_lr
     - Each tier split into decay (weight_decay) and no_decay (0.0 for Norm/bias).
     - Partition assertions: 0 missing parameters, 0 duplicates.
     """
@@ -109,6 +111,16 @@ def create_stage2_optimizer(
         stage2_s2_gate_lr = stage2_base_lr
     if shared_prefixes is None:
         shared_prefixes = DEFAULT_SHARED_PREFIXES
+
+    # Backbone encoder prefixes for Config B encoder fine-tune group
+    ENCODER_PREFIXES = (
+        'backbone.convnext.',
+        'backbone.transformer_blocks.',
+        'backbone.convnext_to_transformer.',
+        'backbone.transformer_to_decoder.',
+        'backbone.pre_transformer_norm.',
+        'backbone.post_transformer_norm.',
+    )
 
     groups = {
         'shared_decay': {'params': [], 'weight_decay': weight_decay, 'lr': stage2_shared_lr, 'name': 'shared_experts'},
@@ -120,6 +132,11 @@ def create_stage2_optimizer(
         's2_gate_decay': {'params': [], 'weight_decay': weight_decay, 'lr': stage2_s2_gate_lr, 'name': 's2_gate'},
         's2_gate_no_decay': {'params': [], 'weight_decay': 0.0, 'lr': stage2_s2_gate_lr, 'name': 's2_gate'},
     }
+
+    # Config B: add a dedicated encoder fine-tune group at very low LR
+    if stage2_encoder_lr is not None:
+        groups['encoder_ft_decay'] = {'params': [], 'weight_decay': weight_decay, 'lr': stage2_encoder_lr, 'name': 'encoder_ft'}
+        groups['encoder_ft_no_decay'] = {'params': [], 'weight_decay': 0.0, 'lr': stage2_encoder_lr, 'name': 'encoder_ft'}
 
     shared_param_ids = set()
     if hasattr(model, 'backbone') and hasattr(model.backbone, 'convnext') and hasattr(model.backbone.convnext, 'stages'):
@@ -141,6 +158,9 @@ def create_stage2_optimizer(
             tier = 'shared'
         elif ('router' in name or 'sa_hub' in name or 'alpha' in name) and (stage2_sage_lr != stage2_base_lr):
             tier = 'sage'
+        elif stage2_encoder_lr is not None and any(name.startswith(pfx) for pfx in ENCODER_PREFIXES):
+            # Config B: encoder params go to their own low-LR fine-tune group
+            tier = 'encoder_ft'
         else:
             tier = 'others'
 
@@ -163,6 +183,7 @@ def create_stage2_optimizer(
     )
 
     return optim.AdamW(param_groups)
+
 
 def get_optimizer_groups(model, lr_backbone, lr_decoder, lr_sage=None, lr_s2_gate=None, weight_decay=0.05, lr_p3=None):
     """
@@ -690,10 +711,15 @@ def main(args):
         use_s2_gate_block2 = config.get('use_s2_gate_block2', False)
         s2_gate_block2_kernel_size = int(config.get('s2_gate_block2_kernel_size', 3))
         s2_gate_block2_dilation = int(config.get('s2_gate_block2_dilation', 2))
+        # Freeze flags: read from config, default False (unfreeze = standard behaviour)
+        freeze_encoder_init = config.get('freeze_encoder', False)
+        freeze_transformer_init = config.get('freeze_transformer', False)
         model = create_b2_unet(
             num_classes=1,
             img_size=img_size,
             num_transformer_layers=vit_depth,
+            freeze_encoder=freeze_encoder_init,
+            freeze_transformer=freeze_transformer_init,
             pretrained=True,
             sage_config=sage_cfg,
             p3_mode=p3_mode,
@@ -712,7 +738,14 @@ def main(args):
             s2_gate_block2_kernel_size=s2_gate_block2_kernel_size,
             s2_gate_block2_dilation=s2_gate_block2_dilation,
         ).to(device)
-        logger.info(f"Loaded B2 with {vit_depth} ViT blocks, full SAGE-Lite injection, p3_mode='{p3_mode}', use_plu_head={use_plu_head}, use_cgsr={use_cgsr}, use_point_rend={use_point_rend}, strip_pool={use_oriented_strip_pooling}, tangent_head={use_tangent_head}, use_s2_gate={use_s2_gate} (k={s2_gate_kernel_size}), use_s2_gate_block2={use_s2_gate_block2} (k={s2_gate_block2_kernel_size}, d={s2_gate_block2_dilation})")
+        logger.info(
+            f"Loaded B2 with {vit_depth} ViT blocks, full SAGE-Lite injection, p3_mode='{p3_mode}', "
+            f"freeze_encoder={freeze_encoder_init}, freeze_transformer={freeze_transformer_init}, "
+            f"use_plu_head={use_plu_head}, use_cgsr={use_cgsr}, use_point_rend={use_point_rend}, "
+            f"strip_pool={use_oriented_strip_pooling}, tangent_head={use_tangent_head}, "
+            f"use_s2_gate={use_s2_gate} (k={s2_gate_kernel_size}), "
+            f"use_s2_gate_block2={use_s2_gate_block2} (k={s2_gate_block2_kernel_size}, d={s2_gate_block2_dilation})"
+        )
 
     else:
         raise ValueError(f"Model {model_type} not implemented yet")
@@ -1152,6 +1185,30 @@ def main(args):
                 model.set_shared_experts(shared_indices)
                 logger.info(f"Stage 2: Updated shared expert indices to {shared_indices}")
 
+            # ── Config B: unfreeze encoder at Stage 2 boundary at very low LR ─────
+            freeze_backbone_stage1_only = config.get('freeze_backbone_stage1_only', False)
+            stage2_encoder_lr = float(config.get('stage2_encoder_lr', 1e-5))
+            if freeze_backbone_stage1_only:
+                unfrozen_count = 0
+                for name, param in model.named_parameters():
+                    if not param.requires_grad:
+                        # Unfreeze CNN encoder stages and ViT transformer blocks
+                        is_backbone_param = (
+                            name.startswith('backbone.convnext.')
+                            or name.startswith('backbone.transformer_blocks.')
+                            or name.startswith('backbone.convnext_to_transformer.')
+                            or name.startswith('backbone.transformer_to_decoder.')
+                            or name.startswith('backbone.pre_transformer_norm.')
+                            or name.startswith('backbone.post_transformer_norm.')
+                        )
+                        if is_backbone_param:
+                            param.requires_grad = True
+                            unfrozen_count += 1
+                logger.info(
+                    f"[Config B] Stage 2: Unfroze {unfrozen_count} backbone parameters "
+                    f"(CNN encoder + ViT transformer). Will be trained at LR={stage2_encoder_lr:.2e}."
+                )
+
             if is_low_lr:
                 target_lr = float(getattr(args, 'low_lr', None) or getattr(args, 'stage2_base_lr', None) or 1e-6)
                 stage2_base_lr = target_lr
@@ -1168,6 +1225,7 @@ def main(args):
             logger.info(
                 f"Stage 2 Optimizer: shared_lr={stage2_shared_lr:.2e}, "
                 f"base_lr={stage2_base_lr:.2e}, sage_lr={stage2_sage_lr:.2e}, s2_gate_lr={stage2_s2_gate_lr:.2e}"
+                + (f", encoder_lr={stage2_encoder_lr:.2e} [unfrozen]" if freeze_backbone_stage1_only else "")
             )
             optimizer = create_stage2_optimizer(
                 model,
@@ -1175,6 +1233,7 @@ def main(args):
                 stage2_shared_lr=stage2_shared_lr,
                 stage2_sage_lr=stage2_sage_lr,
                 stage2_s2_gate_lr=stage2_s2_gate_lr,
+                stage2_encoder_lr=stage2_encoder_lr if freeze_backbone_stage1_only else None,
             )
         else:
             logger.info(f"Stage 1 Optimizer: backbone_lr={lr_backbone:.2e}, decoder_lr={lr_decoder:.2e}, sage_lr={lr_sage:.2e}, s2_gate_lr={lr_s2_gate:.2e}")
