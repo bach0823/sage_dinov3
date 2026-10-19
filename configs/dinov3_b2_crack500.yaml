@@ -1,0 +1,55 @@
+model: B2
+img_size: 448
+batch_size: 16
+num_workers: 2
+epochs: 35
+stage1_epochs: 17
+warmup_epochs: 3
+patience: 8
+seed: 42
+two_stage: true
+
+# Stage 1 Learning Rates
+lr: 1e-4
+sage_lr: 2e-4
+
+# Stage 2 Learning Rates
+stage2_base_lr: 1e-4
+stage2_shared_lr: 1e-4
+
+output_dir: "results/dinov3_sage_b2"
+mask_suffix: ""
+
+# SAGE Configuration (8 Experts: 4 CNN Stages + 4 ViT Blocks, top-k=2)
+sage_config:
+  top_k: 2
+  gating_type: "sigmoid"
+  shared_expert_indices: [0, 1, 2, 3]
+  router_hidden_dim: 64
+  load_balance_factor: 0.01
+  logit_modulation: true
+  expert_dropout: 0.1
+  fusion_type: "residual"
+  residual_scale: 0.1
+
+# Objective Component: SoftBIoU (lambda=0.50, d=2) - Preserved exactly as SAGE-Lite Phase 7
+boundary_iou_weight: 0.50
+boundary_iou_dilation: 2
+
+# Control flags
+ab_bpl_weight: 0.0
+cldice_weight: 0.0
+
+root_dir: "datasets/Crack500_ready"
+
+train:
+  images: "train/images"
+  masks: "train/masks"
+
+val:
+  images: "val/images"
+  masks: "val/masks"
+
+test:
+  images: "test/images"
+  masks: "test/masks"

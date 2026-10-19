@@ -1,0 +1,28 @@
+model: B0
+seed: 42
+img_size: 448
+batch_size: 16
+num_workers: 2
+epochs: 50
+stage1_epochs: 25
+patience: 15
+lr: 1e-4
+output_dir: "results/baselines/B0_Crack500"
+mask_suffix: ""
+
+# root_dir — override per environment:
+#   Colab : root_dir: "/content/dataset/Crack500"
+#   Local (canonical pre-cropped): root_dir: "D:/truong/SpecialSubjectTTNT/datasets/CRACK500_canonical"
+root_dir: "/content/dataset/Crack500"
+
+train:
+  images: "train/images"
+  masks: "train/masks"
+
+val:
+  images: "val/images"
+  masks: "val/masks"
+
+test:
+  images: "test/images"
+  masks: "test/masks"
