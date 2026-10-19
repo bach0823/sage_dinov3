@@ -1,21 +1,74 @@
 # SAGE-DINOv3: Shape-Adapting Gated Experts with DINOv3 for Crack Segmentation
 
-Official PyTorch implementation of **SAGE-DINOv3**, an advanced Mixture of Local Experts (MoLEx) architecture tailored for fine-grained boundary and crack segmentation. SAGE-DINOv3 replaces the legacy backbones with high-capacity **DINOv3 vision foundation models** (ConvNeXt-Tiny + ViT-Small), combined with dynamic routing and shape-adaptive cross-attention.
+Official PyTorch implementation of **SAGE-DINOv3**, an advanced Mixture of Local Experts (MoLEx) architecture tailored for fine-grained boundary and crack segmentation. SAGE-DINOv3 integrates **DINOv3 vision foundation models** (ConvNeXt-Tiny + ViT-Small) with dynamic sparse routing, pairwise cross-space adaptation (SA-Hub), and boundary-aware optimization.
 
 ---
 
-## 🚀 Key Architectural Innovations
+## 🔬 Implementation Highlights — Key Code Architecture
 
-1. **Hybrid Foundation Backbone:**
-   - **CNN Stages (Local Edge & Texture):** DINOv3 ConvNeXt-Tiny (`convnext_tiny.dinov3_lvd1689m`) with channel stages $[96, 192, 384, 768]$.
-   - **Transformer Blocks (Global Context & Topology):** DINOv3 ViT-Small (`vit_small_patch16_dinov3.lvd1689m`) with 4 Dynamic RoPE attention blocks (embedding dim $384$).
-2. **Heterogeneous Expert Pool (8 Experts & 8 Routers):**
-   - 4 ConvNeXt Stage Experts + 4 ViT Block Experts.
-   - 8 Hierarchical SAGE Routers (Top-2 dynamic gating, Sigmoid modulation, load balancing $\lambda=0.01$).
-3. **Shape-Adapting Hub (SA-Hub):**
-   - Pairwise cross-space adapters enabling seamless feature exchange between CNN spatial maps and ViT token representations.
-4. **Boundary IoU Objective:**
-   - Differentiable Soft Boundary IoU ($\lambda=0.50, d=2$) preserving narrow crack continuity.
+### 1. Hybrid DINOv3 Backbone Integration
+SAGE-DINOv3 combines two complementary DINOv3 foundation backbones:
+* **ConvNeXt-Tiny DINOv3** (`convnext_tiny.dinov3_lvd1689m`): 4 convolution stages ($C \in [96, 192, 384, 768]$) capturing local high-frequency crack edges and textures.
+* **ViT-Small DINOv3** (`vit_small_patch16_dinov3.lvd1689m`): 4 Vision Transformer blocks ($D=384$) equipped with Dynamic RoPE (Rotary Position Embeddings) capturing global topological connectivity.
+
+Weights are loaded automatically from the official `timm` / Hugging Face hub repository:
+```python
+# sage/networks/convnextv2_vit_hybrid.py
+self.convnext = timm.create_model("convnext_tiny.dinov3_lvd1689m", pretrained=True)
+vit_full = timm.create_model("vit_small_patch16_dinov3.lvd1689m", pretrained=True)
+```
+
+### 2. In-Place SAGE Layer Injection & Expert Pool
+SAGE wraps the 4 CNN stages and 4 ViT blocks in-place into `SageLayer` modules, constructing a **heterogeneous pool of 8 experts**:
+```python
+# sage/networks/b2_unet.py
+self.expert_pool = inject_sage_layers(
+    convnext=self.backbone.convnext,
+    transformer_blocks=self.backbone.transformer_blocks,
+    encoder_channels=[96, 192, 384, 768],
+    transformer_dim=384,
+    sage_config=self.sage_config,
+)
+```
+Each layer combines:
+$$\mathbf{y} = \alpha \cdot \mathbf{y}_{\text{main}} + (1 - \alpha) \cdot \mathbf{y}_{\text{expert}}$$
+Where $\mathbf{y}_{\text{expert}}$ is dynamically computed by routing patches to the Top-$2$ most relevant experts selected from the 8-expert pool.
+
+### 3. Cross-Space SA-Hub Adapters
+To allow CNN tokens to pass through ViT blocks and vice-versa, the **Shape-Adapting Hub (SA-Hub)** instantiates pairwise projection adapters:
+* **CNN $\to$ ViT:** 1x1 Conv $\to$ Flatten spatial dimensions $(H, W) \to$ Patch sequence.
+* **ViT $\to$ CNN:** Reshape token sequence to 2D $\to$ Bilinear Interpolation to target spatial resolution $\to$ 1x1 Conv.
+
+---
+
+## ⚖️ Trainable vs. Frozen Parameter Regimes
+
+SAGE-DINOv3 supports two verified training protocols on the **Crack500** benchmark:
+
+### Parameter Status by Module and Stage
+
+| Module / Layer | Config A (Stage 1 & 2) | Config B (Stage 1: Ep 1-17) | Config B (Stage 2: Ep 18-35) | Optimizer Learning Rate |
+| :--- | :---: | :---: | :---: | :---: |
+| **DINOv3 ConvNeXt Stages** (`.main_block`) | **Frozen** (`grad=None`) | **Frozen** (`grad=None`) | **Trainable** (Unfrozen) | $\text{LR} = 10^{-5}$ *(Config B Stage 2)* |
+| **DINOv3 ViT Blocks** (`.main_block`) | **Frozen** (`grad=None`) | **Frozen** (`grad=None`) | **Trainable** (Unfrozen) | $\text{LR} = 10^{-5}$ *(Config B Stage 2)* |
+| **Bridge Projections** (`convnext_to_transformer`) | **Trainable** | **Trainable** | **Trainable** | $\text{LR} = 10^{-4}$ |
+| **8 SAGE Routers** | **Trainable** | **Trainable** | **Trainable** | $\text{LR} = 2 \times 10^{-4}$ (S1) / $10^{-4}$ (S2) |
+| **SA-Hub Pairwise Adapters** | **Trainable** | **Trainable** | **Trainable** | $\text{LR} = 2 \times 10^{-4}$ (S1) / $10^{-4}$ (S2) |
+| **UNet Decoder** | **Trainable** | **Trainable** | **Trainable** | $\text{LR} = 10^{-4}$ |
+| **Soft Boundary IoU Loss** | *N/A (Loss function)* | *N/A (Loss function)* | *N/A (Loss function)* | *No parameters to update* |
+
+---
+
+## 📊 Empirical Benchmarks on NVIDIA Tesla T4 (Google Colab)
+
+Detailed empirical characterization of memory footprint and training speed on Tesla T4 (see full report in [`docs/dinov3_verification_t4.md`](docs/dinov3_verification_t4.md)):
+
+| Experiment Mode | Config File | Batch Size | Peak VRAM | Speed | 1 Epoch Time | Full 35 Epochs |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **Config A** *(Full Freeze)* | `configs/dinov3_b2_crack500_frozen_full.yaml` | **16** | **9,353 MB** | **9.83 img/s** | ~3.2 min | **~1.88 hours** |
+| **Config B** *(Stage 2 Unfreeze)* | `configs/dinov3_b2_crack500_frozen_stage1.yaml` | **10** | **10,477 MB** | **7.01 img/s** | ~4.5 min | **~2.64 hours** |
+
+* **Hardware Safety:** Config B uses `BS=10` to maintain a **>4.0 GB VRAM safety buffer**, preventing transient out-of-memory errors caused by dynamic sparse expert routing.
 
 ---
 
@@ -23,10 +76,12 @@ Official PyTorch implementation of **SAGE-DINOv3**, an advanced Mixture of Local
 
 ```text
 sage_dinov3/
-├── configs/                  # Standard training configurations
+├── configs/                  # Active training configurations
 │   ├── dinov3_b2_crack500.yaml               # Canonical Base configuration
 │   ├── dinov3_b2_crack500_frozen_full.yaml   # Config A: Full Freeze (BS=16)
 │   └── dinov3_b2_crack500_frozen_stage1.yaml # Config B: Stage 2 Unfreeze 1e-5 (BS=10)
+├── docs/                     # Verification and empirical characterization reports
+│   └── dinov3_verification_t4.md             # T4 VRAM, throughput & stability report
 ├── sage/                     # Core library implementation
 │   ├── components/           # SAGE Routers, SA-Hub adapters, SageLayer wrappers
 │   ├── networks/             # B2 U-Net, ConvNeXt+ViT Hybrid, Decoders
@@ -48,34 +103,22 @@ sage_dinov3/
 
 ---
 
-## 🔬 Training Configurations
+## ⚡ Reproduction Guide (Google Colab / Tesla T4)
 
-We provide two verified training regimes on the **Crack500** benchmark:
-
-| Mode | Config File | Batch Size | Stage 1 (Epoch 1-17) | Stage 2 (Epoch 18-35) | Peak VRAM | Speed |
-| :--- | :--- | :---: | :--- | :--- | :---: | :---: |
-| **Config A** *(Full Freeze)* | `configs/dinov3_b2_crack500_frozen_full.yaml` | **16** | Backbone Frozen | Backbone Frozen | 9.3 GB | ~10.2 img/s |
-| **Config B** *(Delayed Unfreeze)* | `configs/dinov3_b2_crack500_frozen_stage1.yaml` | **10** | Backbone Frozen | Backbone Unfrozen ($\text{LR}=10^{-5}$) | 10.5 GB | ~12.5 img/s |
-
----
-
-## ⚡ Quick Start (Google Colab / Tesla T4)
-
-### 1. Setup & Environment
-
+### Step 1: Environment Setup & Dataset Preparation
 ```bash
-# Clone repository
+%cd /content
+!rm -rf /content/sage_dinov3
 !git clone https://github.com/bach0823/sage_dinov3.git /content/sage_dinov3
 %cd /content/sage_dinov3
 
-# Install dependencies and download Crack500 dataset
-!pip install -q -r requirements.txt
+# Download and extract Crack500 (1896 training samples)
 !python prepare_data/prepare_crack500.py
 ```
 
-### 2. Run Training
+### Step 2: Launch Training
 
-* **Train Config A (Full Freeze - Fast & Lightweight):**
+* **To train Config A (Full Freeze — Fast & Lightweight):**
 ```bash
 %cd /content/sage_dinov3
 !python scripts/train_crack.py \
@@ -83,7 +126,7 @@ We provide two verified training regimes on the **Crack500** benchmark:
   --data-root /content/dataset/Crack500
 ```
 
-* **Train Config B (Delayed Unfreeze - Foundation Fine-tuning):**
+* **To train Config B (Delayed Unfreeze — Foundation Fine-Tuning):**
 ```bash
 %cd /content/sage_dinov3
 !python scripts/train_crack.py \
@@ -91,8 +134,8 @@ We provide two verified training regimes on the **Crack500** benchmark:
   --data-root /content/dataset/Crack500
 ```
 
-### 3. Post-Training Routing Diagnostics & Archival
-
+### Step 3: Post-Training Routing Diagnostics & Archival
+Following SAGE project standards, post-training evaluation, diagnostics, and artifact downloading are executed in an **All-in-One Cell**:
 ```python
 %cd /content/sage_dinov3
 from google.colab import files
@@ -106,25 +149,19 @@ import shutil
     --split val \
     --data-root /content/dataset/Crack500
 
-# 2. Package checkpoints (Best + Last models) and logs
+# 2. Package checkpoints (Preserves BOTH best_model and last_model) + Logs
 archive_name = "/content/dinov3_sage_b2_frozen_stage1_run"
 shutil.make_archive(archive_name, "zip", "results", "dinov3_sage_b2_frozen_stage1")
 
-# 3. Download to local machine
+# 3. Trigger browser download to local workstation
 files.download(f"{archive_name}.zip")
 ```
 
 ---
 
-## 🧪 Preflight & Verification Suite
+## 🧪 Verification & Stability Tests
 
-Before launching extensive runs, verify AMP FP16 numerical stability and sparse adapter routing:
-
+Verify AMP FP16 numerical stability, cuDNN Tensor Core compatibility, and active adapter tracking:
 ```bash
 python scripts/tests/test_amp_stability.py
 ```
-
-Expected output:
-- `FP32 Baseline`: Loss finite, NaN = 0, Inf = 0.
-- `AMP FP16`: Stable gradient backpropagation with cuDNN enabled.
-- `SA-Hub Adapter Audit`: Active adapters tracked across batches.
