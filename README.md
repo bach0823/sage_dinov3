@@ -1,119 +1,130 @@
-<p align="center">
-  <h1 align="center"><ins>SAGE</ins> 🌿<br>Shape-Adapting Gated Experts for Adaptive Histopathology Image Segmentation</h1>
-  <h3 align="center">CVPR 2026 Findings Track</h3>
-  <p align="center">
-    <span class="author-block">
-      <a href="https://orcid.org/0009-0006-6684-5323">Gia Huy Thai</a><sup>1,*</sup>
-      ·
-      <a href="https://scholar.google.com/citations?user=nGUt6_oAAAAJ&hl=en">Hoang-Nguyen Vu</a><sup>2,*</sup>
-      ·
-      <a href="https://scholar.google.com/citations?user=JCbuDwcAAAAJ&hl=vi">Anh-Minh Phan</a><sup>3</sup>
-      ·
-      <a href="https://orcid.org/0009-0006-9039-5887">Quang-Thinh Ly</a><sup>4</sup>
-      ·
-      <a href="https://scholar.google.com/citations?user=rTa5hJwAAAAJ&hl=en">Thi-Ngoc-Truc Nguyen</a><sup>2</sup>
-      ·
-      <a href="https://scholar.google.com.vn/citations?user=Xs7cKMwAAAAJ&hl=vi">Nhat Ho</a><sup>5</sup>
-    </span>
-  </p>
-  <p align="center">
-    <sup>1</sup>University of Science, VNU-HCM &nbsp;&nbsp;
-    <sup>2</sup>Trivita AI &nbsp;&nbsp;
-    <sup>3</sup>University of Technology, VNU-HCM &nbsp;&nbsp;
-    <sup>4</sup>Michigan State University, USA &nbsp;&nbsp;
-    <sup>5</sup>The University of Texas at Austin
-  </p>
-  <p align="center">
-    <sup>*</sup>equal contribution
-  </p>
-  <div align="center">
-  
-  [![arXiv](https://img.shields.io/badge/arXiv-2511.18493-b31b1b.svg)](https://arxiv.org/abs/2511.18493)
-  [![Paper](https://img.shields.io/badge/Paper-CVPR%202026-blue?logo=adobeacrobatreader)](./sage_paper.pdf)
-  [![Project Page](https://img.shields.io/badge/Project-Page-brightgreen)](https://oxyzgiahuy.github.io/sage/)
-  [![Code](https://img.shields.io/badge/GitHub-Code-black?logo=github)](https://github.com/OxyzGiaHuy/SAGE)
-  [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-  [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c.svg)](https://pytorch.org/)
-  [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
-  
-  </div>
-</p>
+# SAGE-DINOv3: Shape-Adapting Gated Experts with DINOv3 for Crack Segmentation
+
+Official PyTorch implementation of **SAGE-DINOv3**, an advanced Mixture of Local Experts (MoLEx) architecture tailored for fine-grained boundary and crack segmentation. SAGE-DINOv3 replaces the legacy backbones with high-capacity **DINOv3 vision foundation models** (ConvNeXt-Tiny + ViT-Small), combined with dynamic routing and shape-adaptive cross-attention.
 
 ---
 
-Official PyTorch implementation of **SAGE**, a novel MoLEx architecture designed to handle variable shape, size, and texture topologies in medical image segmentation. As embodied in SAGE-ConvNeXt+ViT-UNet, it adapts automatically to diverse glandular structures by locally routing image patches to highly specialized convolution and transformer experts.
+## 🚀 Key Architectural Innovations
 
-## 🚀 Key Features
-
-- **Hybrid CNN-Transformer Encoder:** Leverages ConvNeXt and ViT blocks to capture both local edge details and global spatial relationships.
-- **Hierarchical SAGE Routing:** Patches are dynamically routed to a pool of 28 specialized experts based on their semantic and structural density (e.g., normal tissue vs. irregular carcinoma variants).
-- **SAHub (Shape-Adapting Hub) Decoder:** Reconstructs complex boundaries using cross-attention mechanisms conditioned on expert embeddings.
-- **Two-Stage Training:**
-  - *Stage 1:* Train the full model to allow experts to learn diverse shape specializations.
-  - *Stage 2:* Freeze core shared representations and selectively fine-tune adaptive pathways with differentiated learning rates.
+1. **Hybrid Foundation Backbone:**
+   - **CNN Stages (Local Edge & Texture):** DINOv3 ConvNeXt-Tiny (`convnext_tiny.dinov3_lvd1689m`) with channel stages $[96, 192, 384, 768]$.
+   - **Transformer Blocks (Global Context & Topology):** DINOv3 ViT-Small (`vit_small_patch16_dinov3.lvd1689m`) with 4 Dynamic RoPE attention blocks (embedding dim $384$).
+2. **Heterogeneous Expert Pool (8 Experts & 8 Routers):**
+   - 4 ConvNeXt Stage Experts + 4 ViT Block Experts.
+   - 8 Hierarchical SAGE Routers (Top-2 dynamic gating, Sigmoid modulation, load balancing $\lambda=0.01$).
+3. **Shape-Adapting Hub (SA-Hub):**
+   - Pairwise cross-space adapters enabling seamless feature exchange between CNN spatial maps and ViT token representations.
+4. **Boundary IoU Objective:**
+   - Differentiable Soft Boundary IoU ($\lambda=0.50, d=2$) preserving narrow crack continuity.
 
 ---
 
 ## 📁 Repository Structure
 
-```
-SAGE/
-├── sage/                   # Core Python package (layers, architectures, utilities)
-├── scripts/                # Entry points for single-GPU and multi-GPU (DDP) training
-├── configs/                # YAML configurations for datasets and experiments
-├── prepare_data/           # Scrips for automated Data pre-processing/stratified splits
-├── tools/                  # Verification, Inference, and Metrics utilities
-├── docs/                   # Detailed documentation and running guides
-└── requirements.txt        # All python dependencies
+```text
+sage_dinov3/
+├── configs/                  # Standard training configurations
+│   ├── dinov3_b2_crack500.yaml               # Canonical Base configuration
+│   ├── dinov3_b2_crack500_frozen_full.yaml   # Config A: Full Freeze (BS=16)
+│   └── dinov3_b2_crack500_frozen_stage1.yaml # Config B: Stage 2 Unfreeze 1e-5 (BS=10)
+├── sage/                     # Core library implementation
+│   ├── components/           # SAGE Routers, SA-Hub adapters, SageLayer wrappers
+│   ├── networks/             # B2 U-Net, ConvNeXt+ViT Hybrid, Decoders
+│   └── utils/                # Dataloader, metrics, evaluation utilities
+├── scripts/                  # Training and evaluation entry points
+│   ├── train_crack.py        # Two-stage training engine with dynamic unfreeze
+│   ├── evaluate_crack_official.py # Direct-resize official Crack500 benchmark
+│   └── tests/                # Precision and protocol verification tests
+│       ├── test_amp_stability.py       # FP32/AMP FP16 & adapter gradient audit
+│       ├── test_boundary_iou_loss.py   # Loss correctness tests
+│       └── test_two_stage_protocol.py  # Checkpoint continuity tests
+├── tools/                    # Post-training analysis & visualization
+│   ├── analyze_routing.py    # Per-sample dynamic routing decisions audit
+│   └── visualize_expert_routing_decisions.py # Gate & token routing plots
+├── prepare_data/             # Dataset download & preprocessing
+│   └── prepare_crack500.py   # Automated Crack500 setup
+└── requirements.txt          # Python dependencies
 ```
 
 ---
 
-## 📖 Documentation & Guides
+## 🔬 Training Configurations
 
-Please see the following guides for detailed instructions on how to set up the environment, prepare datasets, and run training pipelines:
+We provide two verified training regimes on the **Crack500** benchmark:
 
-1. **[Quick Start & Full Running Guide](docs/RUNNING_GUIDE.md)** ✨ (Start Here!)
-2. [Dataset Configuration Help](configs/datasets/)
-3. [Contributing & Code Style](CONTRIBUTING.md) 
+| Mode | Config File | Batch Size | Stage 1 (Epoch 1-17) | Stage 2 (Epoch 18-35) | Peak VRAM | Speed |
+| :--- | :--- | :---: | :--- | :--- | :---: | :---: |
+| **Config A** *(Full Freeze)* | `configs/dinov3_b2_crack500_frozen_full.yaml` | **16** | Backbone Frozen | Backbone Frozen | 9.3 GB | ~10.2 img/s |
+| **Config B** *(Delayed Unfreeze)* | `configs/dinov3_b2_crack500_frozen_stage1.yaml` | **10** | Backbone Frozen | Backbone Unfrozen ($\text{LR}=10^{-5}$) | 10.5 GB | ~12.5 img/s |
 
 ---
 
-## 🔧 Brief Setup Instructions
+## ⚡ Quick Start (Google Colab / Tesla T4)
 
-Requirements can be easily installed via standard package managers. We recommend using a Conda environment:
+### 1. Setup & Environment
 
 ```bash
-conda create -n sage python=3.10
-conda activate sage
+# Clone repository
+!git clone https://github.com/bach0823/sage_dinov3.git /content/sage_dinov3
+%cd /content/sage_dinov3
 
-pip install -r requirements.txt
+# Install dependencies and download Crack500 dataset
+!pip install -q -r requirements.txt
+!python prepare_data/prepare_crack500.py
 ```
 
-*For step-by-step training guidance, dataset extraction instructions, and DDP setup, see the **[RUNNING_GUIDE.md](docs/RUNNING_GUIDE.md)**.*
+### 2. Run Training
+
+* **Train Config A (Full Freeze - Fast & Lightweight):**
+```bash
+%cd /content/sage_dinov3
+!python scripts/train_crack.py \
+  --config configs/dinov3_b2_crack500_frozen_full.yaml \
+  --data-root /content/dataset/Crack500
+```
+
+* **Train Config B (Delayed Unfreeze - Foundation Fine-tuning):**
+```bash
+%cd /content/sage_dinov3
+!python scripts/train_crack.py \
+  --config configs/dinov3_b2_crack500_frozen_stage1.yaml \
+  --data-root /content/dataset/Crack500
+```
+
+### 3. Post-Training Routing Diagnostics & Archival
+
+```python
+%cd /content/sage_dinov3
+from google.colab import files
+import shutil
+
+# 1. Routing Diagnostics on Validation Set
+!python tools/analyze_routing.py \
+    --config configs/dinov3_b2_crack500_frozen_stage1.yaml \
+    --checkpoint results/dinov3_sage_b2_frozen_stage1/best_model_b2_stage2.pth \
+    --output_dir results/dinov3_sage_b2_frozen_stage1/routing_diagnostics \
+    --split val \
+    --data-root /content/dataset/Crack500
+
+# 2. Package checkpoints (Best + Last models) and logs
+archive_name = "/content/dinov3_sage_b2_frozen_stage1_run"
+shutil.make_archive(archive_name, "zip", "results", "dinov3_sage_b2_frozen_stage1")
+
+# 3. Download to local machine
+files.download(f"{archive_name}.zip")
+```
 
 ---
 
-## 🙏 Acknowledgements
+## 🧪 Preflight & Verification Suite
 
-We gratefully acknowledge The University of Texas at Austin for supporting this research, and Trivita AI and AI VIET NAM for providing the GPU computing resources essential to this work.
+Before launching extensive runs, verify AMP FP16 numerical stability and sparse adapter routing:
 
----
-
-## 📝 Citation
-
-If you find this research useful, please consider citing our work:
-
-```bibtex
-@InProceedings{Thai_2026_CVPR,
-    author    = {Thai, Gia Huy and Vu, Hoang-Nguyen and Phan, Anh-Minh and Ly, Quang-Thinh and Nguyen, Thi-Ngoc-Truc and Ho, Nhat},
-    title     = {SAGE: Shape-Adapting Gated Experts for Adaptive Histopathology Image Segmentation},
-    booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Findings},
-    month     = {June},
-    year      = {2026},
-    pages     = {7337-7346}
-}
+```bash
+python scripts/tests/test_amp_stability.py
 ```
 
-## 📄 License
-This project is licensed under the MIT License.
+Expected output:
+- `FP32 Baseline`: Loss finite, NaN = 0, Inf = 0.
+- `AMP FP16`: Stable gradient backpropagation with cuDNN enabled.
+- `SA-Hub Adapter Audit`: Active adapters tracked across batches.
